@@ -1,0 +1,292 @@
+---
+title: "Word Embedding using Keras"
+author: "Ahmad Husain Abdullah & Nabiilah Ardini F."
+date: "4/30/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Word Embedding and Word2Vec
+
+Word embedding is the process of capturing context of a word in a document such as word semantic and its relation with other words. A general architecture or technique used for word embeddings is called **Word2Vec** which use *shallow neural network* to develop words characteristics.
+
+Here we will describe step-by-step on developing word embedding with Word2Vec architecture using Keras in R. 
+
+## Libraries
+
+We will use the following packages:
+
+```{r message=FALSE}
+library(tidyverse)
+```
+
+## The Dataset
+
+News concerning the **COVID-19** was collected in 29 April 2020 from various news platform in **Indonesia**. We aim to perform word embedding for the words found in the news.
+
+```{r}
+data <- read.csv("29-april-4-13.csv")
+
+head(data)
+```
+
+Description:
+
+* **title**: News title
+* **text**: News text 
+
+in addition, we also save a vector containing Indonesian stopwords from [online source](https://raw.githubusercontent.com/masdevid/ID-Stopwords/master/id.stopwords.02.01.2016.txt) for data pre-processing.
+
+```{r}
+stopwords <- read.csv(url("https://raw.githubusercontent.com/masdevid/ID-Stopwords/master/id.stopwords.02.01.2016.txt"), header = FALSE)
+```
+
+```{r}
+head(stopwords)
+```
+
+## Data Pre-processing
+
+### Pre-processing Text Data
+
+This step will transform the value in column `text` into a standarized and tidy format, ready for tokenization.
+
+```{r}
+data <- data %>% 
+  mutate(text = text %>% 
+           
+           # turn text into lowercase
+                str_to_lower() %>% 
+           # remove stopwords
+                tm::removeWords(words = stopwords$V1) %>%
+           # reduce repeated whitespace from the text
+                str_squish())
+
+head(data)
+```
+
+### Tokenization
+
+We will use functions from the package `keras` for tokenize each strings of our text (one string for 1 article) data into its component words.
+
+```{r}
+library(keras)
+
+# making tokenizer
+tokenizer <- text_tokenizer(num_words =  18000) # maximum number of word to keep (based on frequency)
+
+# tokenize data
+tokenizer %>% fit_text_tokenizer(data$text)
+```
+
+After tokenization, we should make a **skip-gram training samples** for training our Word2Vec architecture. The training sample contains a collection of sequence from our text data, cut based on the determinded number of skip-gram.
+
+For example, a sentence "I love to drink orange juice" with 3-skip-gram should create:
+
+  ('I', 'love'),
+  ('I', 'to'),
+  ('I', 'drink'),
+  
+  ('love', 'I'),
+  ('love', 'to'),
+  ('love', 'drink'),
+  ('love', 'orange'),
+
+  ('to', 'I'),
+  ('to', 'love'),
+  ('to', 'drink'),
+  ('to', 'orange'),
+  ('to', 'juice'),
+
+  ('drink', 'I'),
+  ('drink', 'love'),
+  ('drink', 'to'),
+  ('drink', 'orange'),
+  ('drink', 'juice'),
+  
+  ('orange', 'love'),
+  ('orange', 'to'),
+  ('orange', 'drink'),
+  ('orange', 'juice'),
+
+  ('juice', 'to'),
+  ('juice', 'drink'),
+  ('juice', 'orange')
+
+Below is a function to prepare our skip-gram training sample:
+
+```{r}
+library(reticulate)
+library(purrr)
+
+skipgrams_generator <- function(text, tokenizer, window_size, negative_samples) {
+  
+  gen <- texts_to_sequences_generator(tokenizer, sample(text))
+  
+  function() {
+    skip <- generator_next(gen) %>%
+      skipgrams(
+        vocabulary_size = tokenizer$num_words, 
+        window_size = window_size, 
+        negative_samples = 1
+      )
+    
+    x <- transpose(skip$couples) %>% map(. %>% unlist %>% as.matrix(ncol = 1))
+    y <- skip$labels %>% as.matrix(ncol = 1)
+    
+    list(x, y)
+  }
+  
+}
+
+```
+
+Description:
+
+* **text**: text/string data
+* **tokenizer**: text tokenizer
+* **window_size**: n-skip-gram
+* **negative_sample**: number of negative sample(s) for model tuning
+
+Next we will build Word2Vec Architecture and prepare some model tuning inputs:
+
+* **skip_window**: to determine the number of neighboring words (n-skip-gram) for training sample
+* **embedding size**: dimension for vector embedding; number or words to be embedded
+* **num_sampled**: number of negative sample(s) for model tuning. 5 negative sample means the model will only be trained by one positive output and 5 negative output during model training. 
+
+Also note that when we use skip-gram architecture:
+
+* one input is for one context (target) word.
+* the number of output is the number of its neighboring words.
+* the model will be trained with a list of skip-gram training sample, with one epoch stands for 1 training iteration, and one batch (in each epoch) for one group of skip-gram pairs, for example:
+
+  ('I', 'love'),
+  ('I', 'to'),
+  ('I', 'drink'),
+
+```{r}
+# determine model tuning inputs
+embedding_size <- 256  # dimension of vector embedding
+skip_window <- 5       # number of skip-gram
+num_sampled <- 1       # number of negative sample for each word
+```
+
+## Model Architecture
+
+```{r}
+# making architecture
+input_target <- layer_input(shape = 1)
+input_context <- layer_input(shape = 1)
+
+embedding <- layer_embedding(
+  input_dim = tokenizer$num_words + 1,
+  output_dim = embedding_size,
+  input_length = 1, 
+  name = "embedding"
+)
+
+target_vector <- input_target %>% 
+  embedding() %>% 
+  layer_flatten() # to return the dimension of the input
+
+context_vector <- input_context %>%
+  embedding() %>%
+  layer_flatten()
+
+dot_product <- layer_dot(list(target_vector, context_vector), axes = 1)
+
+output <- layer_dense(dot_product, units = 1, activation = "sigmoid")
+```
+
+```{r}
+model <- keras_model(list(input_target, input_context), output)
+model %>% compile(loss = "binary_crossentropy", optimizer = "adam")
+```
+```{r}
+
+```
+
+Below is the Word2Vec architecture:
+
+```{r}
+summary(model)
+```
+
+## Model Training
+
+```{r}
+model %>%
+  fit_generator(
+    skipgrams_generator(data$text, tokenizer, skip_window, negative_samples),
+    steps_per_epoch = 100, epochs = 30
+    )
+```
+
+## Obtaining Weights for Word Embeddings
+
+During the training process, our model will update the weights from the each input (one context word) to the specified number of neuron in the hidden/embedding layer. This weights is the value that will be used to describe each word for word embeddings. A collection of this weights for many number of words is what we call word vector.
+ 
+```{r}
+#obtaining word vector
+embedding_matrix <- get_weights(model)[[1]]
+
+words <- dplyr::data_frame(
+  word = names(tokenizer$word_index), 
+  id = as.integer(unlist(tokenizer$word_index))
+)
+
+words <- words %>%
+  dplyr::filter(id <= tokenizer$num_words) %>%
+  dplyr::arrange(id)
+
+row.names(embedding_matrix) <- c("UNK", words$word)
+
+dim(embedding_matrix)
+```
+
+As you can see, there are 18001 words with 256 value (characteristics) to explain them.
+
+## Finding Similar Words 
+
+Once we have the word vector, we can use it to perform analysis on word/text semantics. For example, we can use it to find similar word from a pool of vocabulary based on cosine similarity:
+
+```{r}
+library(text2vec)
+
+find_similar_words <- function(word, embedding_matrix, n = 7) {
+  similarities <- embedding_matrix[word, , drop = FALSE] %>%
+    sim2(embedding_matrix, y = ., method = "cosine")
+  
+  similarities[,1] %>% sort(decreasing = TRUE) %>% head(n)
+}
+```
+
+```{r}
+find_similar_words("corona", embedding_matrix)
+```
+
+```{r}
+find_similar_words("pandemi", embedding_matrix)
+```
+
+```{r}
+find_similar_words("baswedan", embedding_matrix)
+```
+
+```{r}
+find_similar_words("lockdown", embedding_matrix)
+```
+
+```{r}
+find_similar_words("psbb", embedding_matrix)
+```
+
+We can see that the word "corona" took "virus" for the word with the highest similarity, following "pandemi" with "wabah", "baswedan" with "anies", "dki", "jakarta" etc. Some words may not be very similar but the performace can be improved by providing more data for the model training. 
+## Closure
+
+We hope this brief explanation on word embedding and Word2Vec in R can be useful for you, the readers. Happy learning!
+
+***
